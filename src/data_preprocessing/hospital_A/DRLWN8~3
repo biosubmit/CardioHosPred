@@ -1,0 +1,330 @@
+"""
+整体流程：
+    - Step A: 读取检查数据(主输入)
+    - Step B: 读取并处理病案首页(计算出院日期) -> 读取处理后结果
+    - Step C: 读取城市经济数据并预处理
+    - Step D: 将检查数据与住院信息合并，获取最接近入院信息
+    - Step E: 根据地址与年份，从城市数据库获取经济指标
+    - Step F: 输出结果(main_data(fix_time_label)_new_data_all_2.csv)
+"""
+import pandas as pd
+
+import tqdm
+
+def read_checkup_data(file_path: str = 'check_up_merged_result.csv') -> pd.DataFrame:
+    """
+    读取检查数据(主输入)
+    """
+    return pd.read_csv(file_path)
+
+def get_adresss_dict(file_path: str = 'Province_city_correct.csv') -> pd.DataFrame:
+    #TODO:这里对于一个病案号多个地址的情况暂时不纠错，直接取第一个
+    """
+    读取地址文件，并返回一个字典，key为病案号，value为地址
+    """
+    df = pd.read_csv(file_path)
+    
+    # 保留每个病案号第一次出现的城市
+    df_unique = df.drop_duplicates(subset='病案号', keep='first')
+
+    # 构建词典
+    address_dict = dict(zip(df_unique['病案号'], df_unique['城市']))
+
+    return address_dict
+
+def add_city_data(patient_info_df: pd.DataFrame, citybase_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    根据病案号，把citybase_data中的省市级地址数据添加到patient_info_df中
+    """
+
+    return patient_info_df
+
+def read_citybase_data(file_path: str = 'city_database.xlsx') -> pd.DataFrame:
+    """
+    读取城市经济与医疗数据，并进行初步筛选与格式化，添加省份映射。
+    """
+    df = pd.read_excel(file_path)
+    selected_cols = [
+        '年份', '行政区划代码', '地区', '人均地区生产总值(元)',
+        '医院、卫生院数(个)', '医院、卫生院床位数(张)', '医生数(人)', '职工平均工资(元)'
+    ]
+    df = df[selected_cols].dropna(subset=['年份'])
+    df['年份'] = df['年份'].astype(int)
+    df['行政区划代码'] = df['行政区划代码'].astype(str)
+    df['省级代码'] = df['行政区划代码'].str.slice(0, 2)
+
+    # 省份字典
+    province_code_to_name = {
+        '11': '北京',  '12': '天津',  '13': '河北',  '14': '山西',  '15': '内蒙古',
+        '21': '辽宁',  '22': '吉林',  '23': '黑龙江', '31': '上海',  '32': '江苏',
+        '33': '浙江',  '34': '安徽',  '35': '福建',  '36': '江西',  '37': '山东',
+        '41': '河南',  '42': '湖北',  '43': '湖南',  '44': '广东',  '45': '广西',
+        '46': '海南',  '50': '重庆',  '51': '四川',  '52': '贵州',  '53': '云南',
+        '54': '西藏',  '61': '陕西',  '62': '甘肃',  '63': '青海',  '64': '宁夏',
+        '65': '新疆',
+        # 需要的话可继续补充
+    }
+    df['省份'] = df['省级代码'].map(province_code_to_name)
+    return df
+
+# ---------------------- 2. 地址解析与经济指标提取函数 ----------------------
+
+def extract_province(address: str) -> str:
+    """
+    根据地址字符串提取省级名称部分。
+    适配示例：包含 '省'、'自治区'、'市' 等关键字。
+    """
+    if pd.isnull(address):
+        return None
+    if '省' in address:
+        return address.split('省')[0]  # e.g. '广东省广州市' -> '广东'
+    elif '自治区' in address:
+        return address.split('自治区')[0]  # e.g. '内蒙古自治区呼和浩特市' -> '内蒙古'
+    elif '市' in address:
+        # e.g. '北京市海淀区' -> '北京'
+        return address.split('市')[0]
+    return address  # 实在无法识别就原样返回
+
+def extract_city(address: str) -> str:
+    """
+    根据地址提取市级信息，若无'市'关键词则返回None。
+    例如 '广东省广州市' -> '广州市' -> '广州'
+    """
+    if pd.isnull(address):
+        return None
+    if '市' in address:
+        # split('省')[-1] -> '广州市'; 再split('市')[0] -> '广州'
+        return address.split('省')[-1].split('市')[0]
+    return None
+
+def normalize_province_name(province_name: str) -> str:
+    """
+    去除省份名称后缀，如 '省','市','自治区' 等，保留主要文字部分。
+    """
+    if pd.isnull(province_name):
+        return None
+    suffixes = ['省', '市', '自治区', '壮族自治区', '回族自治区', '维吾尔自治区', '特别行政区']
+    for suffix in suffixes:
+        if province_name.endswith(suffix):
+            return province_name.replace(suffix, '')
+    return province_name.strip()
+
+def add_economy_data(year: int, address: str, citybase_data: pd.DataFrame) -> pd.Series:
+    """
+    根据年份和地址，从 citybase_data 中查询相应的城市或省份经济、医疗数据：
+      1) 若城市层面数据存在，则取城市层面
+      2) 否则尝试取省份平均
+      3) 若都不存在，则返回空值
+    返回一个包含五列的Series：
+      ['人均地区生产总值(元)', '医院、卫生院数(个)',
+       '医院、卫生院床位数(张)', '医生数(人)', '职工平均工资(元)']
+    """
+    # 先提取并归一化省份名称
+    province = extract_province(address)
+    city = extract_city(address)
+    normalized_province = normalize_province_name(province)
+
+    # 先尝试获取城市级别数据
+    city_data = citybase_data[
+        (citybase_data['年份'] == year) & (citybase_data['地区'] == city)
+    ]
+    if not city_data.empty:
+        # 若有匹配城市，直接取首行
+        return city_data.iloc[0][[
+            '人均地区生产总值(元)', '医院、卫生院数(个)',
+            '医院、卫生院床位数(张)', '医生数(人)', '职工平均工资(元)'
+        ]]
+
+    # 否则尝试获取省份级别数据
+    province_data = citybase_data[
+        (citybase_data['年份'] == year) & (citybase_data['省份'] == normalized_province)
+    ]
+    if not province_data.empty:
+        numeric_cols = ['人均地区生产总值(元)', '医院、卫生院数(个)',
+                        '医院、卫生院床位数(张)', '医生数(人)', '职工平均工资(元)']
+        # 将这些列转换为数值
+        province_data_numeric = province_data[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        # 取平均值作为省份指标
+        province_avg = province_data_numeric.mean()
+        return province_avg
+
+    # 若都无匹配，则返回空
+    return pd.Series(
+        [None]*5,
+        index=[
+            '人均地区生产总值(元)',
+            '医院、卫生院数(个)',
+            '医院、卫生院床位数(张)',
+            '医生数(人)',
+            '职工平均工资(元)'
+        ]
+    )
+
+# ---------------------- 3. 关键逻辑：合并检查数据 & 病案数据 ----------------------
+
+def merge_checkup_and_patient_info(
+    checkup_df: pd.DataFrame,
+    patient_info_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    根据 checkup_df（主输入），在 patient_info_df 中查找病案号相匹配的未来(或最近)入院信息，
+    并将对应信息(性别、地址、入院日期、出院日期、住院天数、科室、年龄等)合并到 checkup_df。
+    
+    处理逻辑：
+      1. 以病案号分组 patient_info_df
+      2. 对 checkup_df 中每条记录(住院号、日期)：
+         - 找到 patient_info 中对应住院号的多条记录
+         - 过滤出 [入院日期 >= 当前检查日期] 的住院信息
+         - 若存在，则选取距离最小的那个(closest future admission)
+         - 将相关信息合并到结果中
+      3. 未匹配到的记录保持不变或可选择删除
+    返回带有新增信息列的 checkup_df。
+    """
+    # 新增列
+    new_columns = ['性别', '省市级地址', 'embeddings_new_new', '入院日期', 'time_gap',
+                   '出院日期', '住院天数', '住院次数标记', '年龄', '入院科室', '出院科室']
+    
+    for col in new_columns:
+        checkup_df[col] = None
+
+    # 以病案号分组，方便检索
+    patient_info_grouped = patient_info_df.groupby('病案号')
+
+    # 用来临时存储合并结果，最后一次性 update 回 checkup_df
+    results = []
+
+    # 遍历检查表
+    for row in tqdm(checkup_df.itertuples(), total=checkup_df.shape[0]):
+        patient_id = row.住院号
+        checkup_date = row.日期
+        
+        # 若该 patient_id 在 patient_info 中，则取其所有入院记录
+        if patient_id in patient_info_grouped.groups:
+            patient_admissions = patient_info_grouped.get_group(patient_id).copy()
+            # 排序 + 标记入院次数
+            patient_admissions = patient_admissions.sort_values('入院日期').reset_index(drop=True)
+            patient_admissions['入院次数'] = range(1, len(patient_admissions) + 1)
+
+            # 只取 "未来或当下" 的入院记录
+            future_admissions = patient_admissions[patient_admissions['入院日期'] >= checkup_date]
+            if future_admissions.empty:
+                # 没有找到未来入院记录，可选择 continue / 或者取最近过去
+                continue
+
+            # 找到距离最小的(closest admission)
+            future_admissions['日期差'] = (future_admissions['入院日期'] - checkup_date).abs()
+            closest_admission = future_admissions.loc[future_admissions['日期差'].idxmin()]
+
+            # 提取合并所需信息
+            gender = closest_admission['患者性别（病案首页）']
+            address = closest_admission.get('省市级地址', None)
+            checkout_date = closest_admission['出院日期']
+            days_in_hospital = closest_admission['住院天数']
+            admission_dep = closest_admission['入院科室（病案首页）']
+            out_dep = closest_admission['出院科室（病案首页）']
+            age_at_admission = closest_admission['病案首页患者就诊年龄（年）']
+            admission_date = closest_admission['入院日期']
+            time_label = closest_admission['入院次数']
+
+            # 计算时间差/age等
+            year_diff = checkup_date.year - admission_date.year
+            age_at_checkup = age_at_admission + year_diff if pd.notnull(age_at_admission) else None
+            gap = (admission_date - checkup_date).days
+
+            # 构造合并信息dict
+            merge_dict = {
+                '性别': gender,
+                '省市级地址': address,
+                'time_gap': gap,
+                '入院日期': admission_date,
+                '出院日期': checkout_date,
+                '住院天数': days_in_hospital,
+                '住院次数标记': time_label,
+                '年龄': age_at_checkup,
+                '入院科室': admission_dep,
+                '出院科室': out_dep
+            }
+
+            # 存储 (checkup_df 的行索引, 合并信息)
+            results.append((row.Index, merge_dict))
+    
+    # 构造临时df，用于一次性update
+    results_df = pd.DataFrame([res[1] for res in results], index=[res[0] for res in results])
+    # 逐行更新
+    checkup_df.update(results_df)
+
+    # 删除性别为空的行(若这是你的业务需求)
+    checkup_df = checkup_df.dropna(subset=['性别'])
+
+    return checkup_df
+
+# ---------------------- 4. 整合经济指标到检查数据 ----------------------
+
+def integrate_economy_data(
+    checkup_df: pd.DataFrame,
+    citybase_data: pd.DataFrame,
+    out_file: str = 'main_data(fix_time_label)_new_data_all_2.csv'
+) -> pd.DataFrame:
+    """
+    对 checkup_df 中的每条记录，根据其 日期、地址 从 citybase_data 中获取相应年份的城市/省份数据。
+    若年份 >= 2023 则取实际年份，否则默认使用 2022 (可根据需求调整)。
+    将经济数据列写入 checkup_df 并导出到 out_file。
+    """
+    # 新增目标列
+    economic_columns = [
+        '人均地区生产总值(元)', '医院、卫生院数(个)',
+        '医院、卫生院床位数(张)', '医生数(人)', '职工平均工资(元)'
+    ]
+    for col in economic_columns:
+        checkup_df[col] = None
+
+    for row in tqdm(checkup_df.itertuples(), total=checkup_df.shape[0]):
+        idx = row.Index
+        checkup_date = row.日期
+        address = row.省市级地址
+
+        if pd.isnull(checkup_date):
+            # 若日期为空则跳过
+            continue
+
+        # 判断年份，若 >= 2023 则取实际年份，否则默认 2022 (可按需求改动)
+        year = checkup_date.year if checkup_date.year >= 2023 else 2022
+
+        # 获取经济数据
+        economy_data_series = add_economy_data(year, address, citybase_data)
+        for col in economic_columns:
+            checkup_df.at[idx, col] = economy_data_series[col]
+
+    # 导出最终结果
+    checkup_df.to_csv(out_file, index=False, encoding='utf-8')
+    return checkup_df
+
+def get_address_from_dict(address_dict: dict, patient_id: str) -> str:
+    """
+    根据病案号，从地址字典中获取地址
+    """
+    return address_dict.get(patient_id, None)
+
+if __name__ == '__main__':
+
+    citybase_data = read_citybase_data('./data/hospital_A/city_database.xlsx')
+
+    patient_info_df = pd.read_csv('./data/hospital_A/tmp_preprocessed_data/old_patient_info.csv')
+
+    address_df = pd.read_csv('./data/hospital_A/Province_city_correct.csv')
+
+    address_dict = get_adresss_dict('./data/hospital_A/Province_city_correct.csv')
+
+    patient_info_df['省市级地址'] = patient_info_df['病案号'].apply(lambda x: get_address_from_dict(address_dict, x))
+
+    #计算nan
+    nan_count = patient_info_df['省市级地址'].isna().sum()
+    print(f"省市级地址为NaN的数量: {nan_count}")
+
+    #去除省市级地址为nan的行
+    patient_info_df = patient_info_df[patient_info_df['省市级地址'].notna()]
+    
+
+    print(add_economy_data(2022, '广东省广州市', citybase_data))
+
+
