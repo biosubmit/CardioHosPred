@@ -8,10 +8,6 @@ Due to privacy restrictions, raw datasets cannot be released. Researchers intere
 
 ## Directory Structure
 
-
-
-## Directory Structure
-
 ```
 CardioHosPred/
 ├── data/                      # Data storage
@@ -106,9 +102,6 @@ Results from the model training and evaluation are saved in the respective hospi
 
 [Specify the license here]
 
-## Contributors
-
-[List the contributors here]
 
 ## Acknowledgments
 
