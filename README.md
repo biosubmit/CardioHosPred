@@ -1,10 +1,14 @@
 # CardioHosPred
 
-A machine learning project for hospital-based cardiovascular prediction models across multiple hospitals.
+This repository contains the code accompanying our manuscript on modeling hospital admission behaviors using multi-source medical data. The project integrates data from three hospitals—Wuhan Union Hospital (Hospital A), the publicly available MIMIC-III dataset (Hospital B), and Shandong Cancer Hospital (Hospital C)—to develop predictive models for hospital admission timing and cardiovascular-related outcomes.
 
-## Project Overview
+The repository includes complete pipelines for data preprocessing, time-aligned sequence modeling, evaluation, and feature importance analysis. Key tasks include same-day admission classification, 15-day and 365-day readmission prediction, and regression-based estimation of time gaps between diagnostic tests and hospital admissions.
 
-This project analyzes medical data from multiple hospitals (A, B, and C) to build time-series predictive models for cardiovascular outcomes. The project includes data preprocessing, model training, evaluation, and analysis of feature importance across different hospitals and time periods.
+Due to privacy restrictions, raw datasets cannot be released. Researchers interested in reproducing our results or accessing the data should contact the corresponding author. Preprocessed versions of the datasets (excluding raw identifiable fields) are stored under `data/hospital_X/tmp_preprocessed_data/` and used throughout the modeling pipeline.
+
+## Directory Structure
+
+
 
 ## Directory Structure
 
@@ -28,32 +32,25 @@ CardioHosPred/
 
 ## Features
 
-- **Time-based Analysis**: Split data by inspection time in half-year steps and train models for each time period
-- **Feature Importance Analysis**: Identify and visualize important features for prediction
-- **ROC Curve Generation**: Generate and save ROC curves for model evaluation
-- **Cross-hospital Comparison**: Compare model performance across different hospitals
+- **Time-aligned Modeling**: Align test and admission records on a per-patient timeline
+- **Feature Engineering**: Incorporate historical hospitalizations, socioeconomic indicators, and lab value normalization
+- **Task Coverage**:
+  - Same-day admission classification
+  - 15-day and 365-day readmission prediction
+  - Time-gap regression for next admission
+- **Temporal Evaluation**: Analyze performance trends across months and custom-defined policy periods
+- **SHAP-Based Feature Selection**: Temporal feature importance computed and visualized
 
 ## Installation
-
-1. Clone the repository:
 
 ```bash
 git clone <repository-url>
 cd CardioHosPred
-```
-
-2. Create a virtual environment:
-
-```bash
 python -m venv venv
-source venv/bin/activate  # On Windows, use: venv\Scripts\activate
-```
-
-3. Install dependencies:
-
-```bash
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
 
 ## Usage
 
@@ -62,7 +59,9 @@ pip install -r requirements.txt
 To preprocess data for a specific hospital:
 
 ```bash
-python src/data_preprocessing/hospital_A/preprocess.py
+python src/data_preprocessing/hospital_A/preprocess_pipeline.py
+python src/data_preprocessing/hospital_B/preprocess_pipeline.py
+python src/data_preprocessing/hospital_C/preprocess_pipeline.py
 ```
 
 ### Model Training
@@ -75,7 +74,7 @@ python src/model/hospital_A/train_hospital_A_task1.py
 
 ### Model Evaluation
 
-To evaluate a trained model:
+To evaluate a trained regression model in monthly timestep:
 
 ```bash
 python src/model/hospital_A/evaluate_hospital_A_task2.py
@@ -97,7 +96,7 @@ The project primarily uses Random Forest classifiers to predict cardiovascular o
 
 ## Results
 
-Results from the model training and evaluation are saved in the respective hospital directories under `data/`. These include:
+Results from the model training and evaluation are saved in the respective hospital directories under `Result/`. These include:
 
 - ROC curves
 - Feature importance analyses
